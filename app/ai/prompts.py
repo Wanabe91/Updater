@@ -35,7 +35,8 @@ Respond in JSON format:
 """
 
 GENERATE_MIGRATION_PROMPT = """
-Generate code migration steps for replacing {old_package} ({old_version}) with {new_package} ({new_version}).
+Generate code migration steps for replacing
+{old_package} ({old_version}) with {new_package} ({new_version}).
 
 Old API usage:
 {old_code}
