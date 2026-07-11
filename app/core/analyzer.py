@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
-from typing import Optional
+
+from app.ai.client import AIClient, extract_json
+from app.parsers.base import Dependency
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -13,13 +19,81 @@ class Suggestion:
     reason: str
     confidence: float = 0.0
 
+    def to_dict(self) -> dict:
+        return {
+            "original_package": self.package,
+            "suggested_package": self.suggested_package,
+            "reason": self.reason,
+            "confidence": self.confidence,
+        }
+
 
 class Analyzer:
-    def __init__(self) -> None:
-        pass
+    def __init__(
+        self,
+        ai_client: AIClient | None = None,
+        min_confidence: float = 0.5,
+        max_packages: int = 10,
+    ) -> None:
+        self._client = ai_client or AIClient()
+        self._min_confidence = min_confidence
+        self._max_packages = max_packages
 
-    def analyze_package(self, package: str, version: str) -> Optional[Suggestion]:
-        raise NotImplementedError
+    def analyze_package(
+        self, package: str, version: str, ecosystem: str = "python"
+    ) -> list[Suggestion]:
+        response = self._client.suggest_alternative(package, version, ecosystem)
+        if not response.success:
+            logger.warning(
+                "Suggestion request failed for %s: %s", package, response.error
+            )
+            return []
 
-    def analyze_project(self, dependencies: list[dict]) -> list[Suggestion]:
-        raise NotImplementedError
+        try:
+            data = json.loads(extract_json(response.content))
+        except ValueError:
+            logger.warning("Unparseable suggestion response for %s", package)
+            return []
+
+        suggestions: list[Suggestion] = []
+        for alt in data.get("alternatives", []):
+            if not isinstance(alt, dict):
+                continue
+            name = str(alt.get("name", "")).strip()
+            if not name or name.lower() == package.lower():
+                continue
+            try:
+                confidence = float(alt.get("confidence", 0.0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            if confidence < self._min_confidence:
+                continue
+            suggestions.append(
+                Suggestion(
+                    package=package,
+                    current_version=version,
+                    suggested_package=name,
+                    suggested_version=str(alt.get("version", "")),
+                    reason=str(alt.get("reason", "")),
+                    confidence=confidence,
+                )
+            )
+        return sorted(suggestions, key=lambda s: s.confidence, reverse=True)
+
+    def analyze_project(self, dependencies: list[Dependency]) -> list[Suggestion]:
+        suggestions: list[Suggestion] = []
+        seen: set[str] = set()
+        for dep in dependencies:
+            if dep.is_dev or dep.name in seen:
+                continue
+            if len(seen) >= self._max_packages:
+                logger.info(
+                    "Package limit (%d) reached, skipping the rest",
+                    self._max_packages,
+                )
+                break
+            seen.add(dep.name)
+            suggestions.extend(
+                self.analyze_package(dep.name, dep.version, dep.ecosystem or "python")
+            )
+        return suggestions

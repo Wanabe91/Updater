@@ -108,17 +108,21 @@ class AIClient:
         response = self.chat(messages, temperature=0.2)
         if response.success:
             try:
-                response.content = _extract_json(response.content)
+                response.content = extract_json(response.content)
             except ValueError:
                 logger.warning("Failed to parse JSON from suggest_alternative response")
         return response
 
 
-def _extract_json(text: str) -> str:
+def extract_json(text: str) -> str:
+    """Return the validated JSON object substring of an AI response."""
     start = text.find("{")
     end = text.rfind("}") + 1
     if start == -1 or end == 0:
         raise ValueError("No JSON object found in response")
     json_str = text[start:end]
-    json.loads(json_str)
+    try:
+        json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in response: {exc}") from exc
     return json_str

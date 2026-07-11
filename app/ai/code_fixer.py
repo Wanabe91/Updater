@@ -4,10 +4,22 @@ import json
 import logging
 from pathlib import Path
 
-from app.ai.client import AIClient
+from app.ai.client import AIClient, extract_json
 from app.ai.prompts import GENERATE_MIGRATION_PROMPT
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_code_fences(text: str) -> str:
+    text = text.strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    if lines and lines[-1].strip() == "```":
+        lines = lines[1:-1]
+    else:
+        lines = lines[1:]
+    return "\n".join(lines)
 
 
 class CodePatch:
@@ -41,8 +53,10 @@ class CodeFixer:
         file_path: Path,
         old_package: str,
         new_package: str,
+        source: str | None = None,
     ) -> CodePatch | None:
-        source = file_path.read_text(encoding="utf-8")
+        if source is None:
+            source = file_path.read_text(encoding="utf-8")
         messages = [
             {
                 "role": "system",
@@ -68,7 +82,9 @@ class CodeFixer:
             logger.error("fix_imports failed for %s: %s", file_path, response.error)
             return None
 
-        new_source = response.content
+        new_source = _strip_code_fences(response.content)
+        if source.endswith("\n") and not new_source.endswith("\n"):
+            new_source += "\n"
         if new_source.strip() == source.strip():
             logger.info("No import changes needed in %s", file_path)
             return None
@@ -87,8 +103,10 @@ class CodeFixer:
         old_version: str,
         new_package: str,
         new_version: str,
+        source: str | None = None,
     ) -> list[CodePatch]:
-        source = file_path.read_text(encoding="utf-8")
+        if source is None:
+            source = file_path.read_text(encoding="utf-8")
 
         if old_package not in source and new_package not in source:
             return []
@@ -116,7 +134,7 @@ class CodeFixer:
             return []
 
         try:
-            result = _extract_json(response.content)
+            result = json.loads(extract_json(response.content))
         except ValueError:
             logger.warning(
                 "Failed to parse JSON from fix_api_usage for %s",
@@ -128,12 +146,16 @@ class CodeFixer:
         if not migrated_code or migrated_code.strip() == source.strip():
             return []
 
+        breaking = result.get("breaking_changes", "")
+        if isinstance(breaking, list):
+            breaking = "; ".join(str(item) for item in breaking)
+
         return [
             CodePatch(
                 file_path=file_path,
                 old_code=source,
                 new_code=migrated_code,
-                description=result.get("breaking_changes", ""),
+                description=breaking,
             )
         ]
 
@@ -142,6 +164,8 @@ class CodeFixer:
         project_path: Path,
         old_package: str,
         new_package: str,
+        old_version: str = "",
+        new_version: str = "",
     ) -> list[CodePatch]:
         patches: list[CodePatch] = []
         supported_ext = {
@@ -166,27 +190,22 @@ class CodeFixer:
             if old_package not in source:
                 continue
 
-            import_patch = self.fix_imports(file_path, old_package, new_package)
+            import_patch = self.fix_imports(
+                file_path, old_package, new_package, source=source
+            )
+            current_source = source
             if import_patch is not None:
                 patches.append(import_patch)
-                continue
+                current_source = import_patch.new_code
 
             api_patches = self.fix_api_usage(
                 file_path,
                 old_package,
-                "",
+                old_version,
                 new_package,
-                "",
+                new_version,
+                source=current_source,
             )
             patches.extend(api_patches)
 
         return patches
-
-
-def _extract_json(text: str) -> dict:
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start == -1 or end == 0:
-        raise ValueError("No JSON object found in response")
-    json_str = text[start:end]
-    return json.loads(json_str)

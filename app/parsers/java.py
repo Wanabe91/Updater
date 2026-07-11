@@ -49,10 +49,7 @@ def _resolve_version(version: str, properties: dict[str, str]) -> str:
 
 def _parse_pom_xml(content: str, source: str) -> list[Dependency]:
     deps: list[Dependency] = []
-    try:
-        root = ET.fromstring(content)
-    except ET.ParseError:
-        return deps
+    root = ET.fromstring(content)
 
     properties: dict[str, str] = {}
     for elem in root.iter():
@@ -144,11 +141,10 @@ class JavaParser(BaseParser):
         dependencies: list[Dependency] = []
 
         try:
+            content = file_path.read_text(encoding="utf-8-sig")
             if file_path.name == "pom.xml":
-                content = file_path.read_text(encoding="utf-8-sig")
                 dependencies = _parse_pom_xml(content, str(file_path))
             elif file_path.name in ("build.gradle", "build.gradle.kts"):
-                content = file_path.read_text(encoding="utf-8-sig")
                 dependencies = _parse_gradle(content, str(file_path))
         except Exception as exc:
             errors.append(f"Failed to parse {file_path.name}: {exc}")
@@ -159,6 +155,3 @@ class JavaParser(BaseParser):
             dependencies=dependencies,
             errors=errors,
         )
-
-    def write(self, file_path: Path, result: ParseResult) -> None:
-        raise NotImplementedError

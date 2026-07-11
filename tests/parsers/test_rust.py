@@ -124,8 +124,8 @@ class TestCanParse:
     def test_matches_cargo_lock(self) -> None:
         assert RustParser().can_parse(Path("Cargo.lock"))
 
-    def test_rejects_cargo_toml(self) -> None:
-        assert not RustParser().can_parse(Path("Cargo.toml"))
+    def test_matches_cargo_toml(self) -> None:
+        assert RustParser().can_parse(Path("Cargo.toml"))
 
     def test_rejects_other_files(self) -> None:
         parser = RustParser()

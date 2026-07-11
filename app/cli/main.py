@@ -1,15 +1,14 @@
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
 
-from app.cli.commands.scan import app as scan_app
-from app.cli.commands.update import app as update_app
-from app.cli.commands.suggest import app as suggest_app
-from app.cli.commands.migrate import app as migrate_app
 from app.cli.commands.history import app as history_app
+from app.cli.commands.migrate import app as migrate_app
+from app.cli.commands.scan import app as scan_app
+from app.cli.commands.suggest import app as suggest_app
 from app.cli.commands.tree import app as tree_app
+from app.cli.commands.update import app as update_app
 
 app = typer.Typer(
     name="updater",
@@ -28,7 +27,7 @@ app.add_typer(tree_app, name="tree")
 
 @app.callback()
 def main(
-    project_path: Optional[Path] = typer.Option(
+    project_path: Path | None = typer.Option(
         None,
         "--path",
         "-p",
@@ -37,3 +36,7 @@ def main(
     ),
 ) -> None:
     pass
+
+
+if __name__ == "__main__":
+    app()

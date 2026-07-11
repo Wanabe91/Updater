@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Optional
+from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Integer, String, Text, Float, Boolean, ForeignKey, JSON
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+def utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -17,11 +20,11 @@ class Project(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     path: Mapped[str] = mapped_column(String, unique=True)
     name: Mapped[str] = mapped_column(String)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
-    dependencies: Mapped[list["DependencyRecord"]] = relationship(back_populates="project")
-    trees: Mapped[list["DependencyTreeModel"]] = relationship(back_populates="project")
+    dependencies: Mapped[list[DependencyRecord]] = relationship(back_populates="project")
+    trees: Mapped[list[DependencyTreeModel]] = relationship(back_populates="project")
 
 
 class DependencyRecord(Base):
@@ -35,11 +38,11 @@ class DependencyRecord(Base):
     is_dev: Mapped[bool] = mapped_column(Boolean, default=False)
     source_file: Mapped[str] = mapped_column(String)
     ecosystem: Mapped[str] = mapped_column(String)
-    latest_version: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    latest_version: Mapped[str | None] = mapped_column(String, nullable=True)
     is_outdated: Mapped[bool] = mapped_column(Boolean, default=False)
-    scanned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    scanned_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
-    project: Mapped["Project"] = relationship(back_populates="dependencies")
+    project: Mapped[Project] = relationship(back_populates="dependencies")
 
 
 class UpdateHistory(Base):
@@ -52,8 +55,8 @@ class UpdateHistory(Base):
     new_version: Mapped[str] = mapped_column(String)
     action: Mapped[str] = mapped_column(String)
     success: Mapped[bool] = mapped_column(Boolean, default=True)
-    details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class SuggestionHistory(Base):
@@ -65,8 +68,8 @@ class SuggestionHistory(Base):
     suggested_package: Mapped[str] = mapped_column(String)
     reason: Mapped[str] = mapped_column(Text)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
-    accepted: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    accepted: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class DependencyTreeModel(Base):
@@ -75,6 +78,6 @@ class DependencyTreeModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     tree_data: Mapped[dict] = mapped_column(JSON)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
-    project: Mapped["Project"] = relationship(back_populates="trees")
+    project: Mapped[Project] = relationship(back_populates="trees")

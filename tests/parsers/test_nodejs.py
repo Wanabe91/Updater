@@ -149,6 +149,22 @@ class TestYarnLock:
         assert len(result.dependencies) == 1
         assert result.dependencies[0].name == "@types/node"
 
+    def test_quoted_scoped_key(self, tmp_path: Path) -> None:
+        content = (
+            '"@babel/core@^7.20.0", "@babel/core@^7.18.0":\n'
+            '  version "7.20.12"\n\n'
+        )
+        result = _parse_file(tmp_path, "yarn.lock", content)
+        assert len(result.dependencies) == 1
+        assert result.dependencies[0].name == "@babel/core"
+        assert result.dependencies[0].version == "7.20.12"
+
+    def test_npm_protocol_key(self, tmp_path: Path) -> None:
+        content = '"lodash@npm:^4.17.21":\n  version "4.17.21"\n\n'
+        result = _parse_file(tmp_path, "yarn.lock", content)
+        assert len(result.dependencies) == 1
+        assert result.dependencies[0].name == "lodash"
+
 
 class TestPnpmLock:
     def test_basic(self, tmp_path: Path) -> None:
@@ -168,6 +184,28 @@ class TestPnpmLock:
         result = _parse_file(tmp_path, "pnpm-lock.yaml", content)
         assert len(result.dependencies) == 1
         assert result.dependencies[0].name == "@types/node"
+
+    def test_v9_no_leading_slash(self, tmp_path: Path) -> None:
+        content = (
+            "packages:\n\n"
+            "  express@4.18.2:\n    resolution: {integrity: ...}\n\n"
+            "  '@types/node@18.0.0':\n    resolution: {integrity: ...}\n\n"
+            "snapshots:\n\n"
+            "  ignored@1.0.0:\n    dependencies: {}\n"
+        )
+        result = _parse_file(tmp_path, "pnpm-lock.yaml", content)
+        names = [d.name for d in result.dependencies]
+        assert names == ["express", "@types/node"]
+
+    def test_peer_suffix_stripped(self, tmp_path: Path) -> None:
+        content = (
+            "packages:\n\n"
+            "  /vue-router@4.2.0(vue@3.3.0):\n    resolution: {integrity: ...}\n"
+        )
+        result = _parse_file(tmp_path, "pnpm-lock.yaml", content)
+        assert len(result.dependencies) == 1
+        assert result.dependencies[0].name == "vue-router"
+        assert result.dependencies[0].version == "4.2.0"
 
 
 class TestCanParse:

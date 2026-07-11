@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
@@ -13,6 +12,10 @@ class Dependency:
     version_specifier: str = ""
     is_dev: bool = False
     source: str = ""
+    ecosystem: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 @dataclass
@@ -38,9 +41,14 @@ class BaseParser(ABC):
     def parse(self, file_path: Path) -> ParseResult:
         raise NotImplementedError
 
-    @abstractmethod
-    def write(self, file_path: Path, result: ParseResult) -> None:
-        raise NotImplementedError
-
     def can_parse(self, file_path: Path) -> bool:
         return any(file_path.name == pattern for pattern in self.file_patterns)
+
+    def supports_update(self, file_path: Path) -> bool:
+        return False
+
+    def update_versions(
+        self, file_path: Path, content: str, changes: dict[str, str]
+    ) -> tuple[str, list[str]]:
+        """Return updated file content and the names of packages changed."""
+        raise NotImplementedError

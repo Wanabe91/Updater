@@ -21,16 +21,8 @@ _NPM_SKIP_PREFIXES = (
     "npm:",
     "couchbase:",
 )
-_PNPM_PKG_RE = re.compile(r"^/(.+?)[@/]([^@/:()]+):\s*$")
-_GRADLE_COORD_RE = re.compile(r"""["']([^"']+:[^"']+:[^"']+)["']""")
-_GRADLE_MAP_RE = re.compile(
-    r"""group\s*[:=]\s*["']([^"']+)["']\s*,?\s*"""
-    r"""name\s*[:=]\s*["']([^"']+)["']\s*,?\s*"""
-    r"""version\s*[:=]\s*["']([^"']+)["']"""
-)
-_GRADLE_TEST_CONF_RE = re.compile(
-    r"\btest(Implementation|CompileOnly|Compile|Api|RuntimeOnly|Runtime)\b"
-)
+# pnpm v5: "/name/1.0.0", v6-v8: "/name@1.0.0", v9+: "name@1.0.0"
+_PNPM_PKG_RE = re.compile(r"^/?(.+?)[@/]([^@/:()]+)$")
 
 
 def _parse_npm_spec(spec: str) -> tuple[str, str]:
@@ -173,7 +165,7 @@ def _parse_yarn_lock(content: str, source: str) -> list[Dependency]:
         if not line.startswith(" ") and ":" in line:
             _flush()
             header = stripped.rstrip(":").strip()
-            first_spec = header.split(",")[0].strip()
+            first_spec = header.split(",")[0].strip().strip("\"'")
             at_idx = first_spec.rfind("@")
             if at_idx > 0:
                 current_name = first_spec[:at_idx]
@@ -205,24 +197,48 @@ def _parse_pnpm_lock(content: str, source: str) -> list[Dependency]:
             continue
 
         stripped = line.strip()
-        if stripped and not stripped.startswith("/") and not line.startswith(" "):
+        if stripped and not line.startswith(" "):
             in_packages = False
             continue
 
-        m = _PNPM_PKG_RE.match(stripped)
+        if not stripped.endswith(":"):
+            continue
+
+        key = stripped[:-1].strip().strip("\"'")
+        paren = key.find("(")
+        if paren != -1:
+            key = key[:paren]
+
+        m = _PNPM_PKG_RE.match(key)
         if m:
-            name = m.group(1)
-            version = m.group(2)
             deps.append(
                 Dependency(
-                    name=name,
-                    version=version,
+                    name=m.group(1),
+                    version=m.group(2),
                     version_specifier="=",
                     source=source,
                 )
             )
 
     return deps
+
+
+def _update_package_json(content: str, changes: dict[str, str]) -> tuple[str, list[str]]:
+    changed: list[str] = []
+    for name, new_version in changes.items():
+        pattern = re.compile(r'("' + re.escape(name) + r'"\s*:\s*")([^"]*)(")')
+
+        def replace(m: re.Match[str], new_version: str = new_version) -> str:
+            version, op = _parse_npm_spec(m.group(2))
+            if not version or version in ("*", "latest"):
+                return m.group(0)  # git/workspace/wildcard specs stay untouched
+            return f"{m.group(1)}{op}{new_version}{m.group(3)}"
+
+        new_content, count = pattern.subn(replace, content)
+        if count and new_content != content:
+            content = new_content
+            changed.append(name)
+    return content, changed
 
 
 class NodeJsParser(BaseParser):
@@ -258,5 +274,14 @@ class NodeJsParser(BaseParser):
             errors=errors,
         )
 
-    def write(self, file_path: Path, result: ParseResult) -> None:
-        raise NotImplementedError
+    def supports_update(self, file_path: Path) -> bool:
+        return file_path.name == "package.json"
+
+    def update_versions(
+        self, file_path: Path, content: str, changes: dict[str, str]
+    ) -> tuple[str, list[str]]:
+        if file_path.name == "package.json":
+            return _update_package_json(content, changes)
+        raise NotImplementedError(
+            f"Updating {file_path.name} is not supported yet"
+        )

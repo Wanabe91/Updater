@@ -136,6 +136,16 @@ class TestPyprojectToml:
         assert dep.version_specifier == "^"
         assert dep.version == "2.31.0"
 
+    def test_poetry_compound_constraint(self, tmp_path: Path) -> None:
+        result = _parse_file(
+            tmp_path,
+            "pyproject.toml",
+            '[tool.poetry.dependencies]\nrequests = ">=2.31.0,<3.0"\n',
+        )
+        dep = result.dependencies[0]
+        assert dep.version_specifier == ">="
+        assert dep.version == "2.31.0"
+
     def test_poetry_dev_group(self, tmp_path: Path) -> None:
         result = _parse_file(
             tmp_path,

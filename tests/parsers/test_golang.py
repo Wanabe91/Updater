@@ -25,6 +25,16 @@ class TestGoMod:
         assert dep.version == "v1.9.1"
         assert dep.is_dev is False
 
+    def test_single_line_require_indirect(self, tmp_path: Path) -> None:
+        result = _parse_file(
+            tmp_path,
+            "go.mod",
+            "module example.com/myapp\n\ngo 1.21\n\n"
+            "require github.com/json-iterator/go v1.1.12 // indirect\n",
+        )
+        assert len(result.dependencies) == 1
+        assert result.dependencies[0].is_dev is True
+
     def test_require_block(self, tmp_path: Path) -> None:
         result = _parse_file(
             tmp_path,

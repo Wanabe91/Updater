@@ -5,6 +5,8 @@ import re
 import tomllib
 from pathlib import Path
 
+import tomlkit
+
 from app.parsers.base import BaseParser, Dependency, ParseResult
 
 _NAME_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
@@ -78,6 +80,16 @@ def _parse_requirements(content: str, source: str) -> list[Dependency]:
     return deps
 
 
+def _split_toml_version(spec: str) -> tuple[str, str]:
+    spec = spec.split(",")[0].strip()
+    if not spec or spec == "*":
+        return spec, ""
+    m = _TOML_OP_RE.match(spec)
+    if m:
+        return m.group(2), m.group(1) or ""
+    return spec, ""
+
+
 def _parse_toml_dep(
     name: str, spec: object, source: str, is_dev: bool
 ) -> Dependency | None:
@@ -85,23 +97,11 @@ def _parse_toml_dep(
     version_specifier = ""
 
     if isinstance(spec, str):
-        if spec == "*":
-            version = "*"
-        else:
-            m = _TOML_OP_RE.match(spec)
-            if m:
-                version_specifier = m.group(1) or ""
-                version = m.group(2)
+        version, version_specifier = _split_toml_version(spec)
     elif isinstance(spec, dict):
         ver = spec.get("version", "")
-        if isinstance(ver, str) and ver:
-            if ver == "*":
-                version = "*"
-            else:
-                m = _TOML_OP_RE.match(ver)
-                if m:
-                    version_specifier = m.group(1) or ""
-                    version = m.group(2)
+        if isinstance(ver, str):
+            version, version_specifier = _split_toml_version(ver)
     else:
         return None
 
@@ -196,6 +196,94 @@ def _parse_setup_cfg(content: str, source: str) -> list[Dependency]:
     return deps
 
 
+def _replace_spec_version(text: str, new_version: str) -> str | None:
+    """Replace the first version constraint in a PEP 508 fragment."""
+    m = _SPEC_RE.search(text)
+    if not m:
+        return None
+    return text[: m.start(2)] + new_version + text[m.end(2) :]
+
+
+def _update_requirements(
+    content: str, changes: dict[str, str]
+) -> tuple[str, list[str]]:
+    changed: list[str] = []
+    new_lines: list[str] = []
+    for line in content.splitlines(keepends=True):
+        dep = _parse_pep508(line)
+        if dep and dep.name in changes and dep.version_specifier:
+            cutoff = len(line)
+            for sep in (";", " #"):
+                idx = line.find(sep)
+                if idx != -1:
+                    cutoff = min(cutoff, idx)
+            replaced = _replace_spec_version(line[:cutoff], changes[dep.name])
+            if replaced is not None:
+                line = replaced + line[cutoff:]
+                changed.append(dep.name)
+        new_lines.append(line)
+    return "".join(new_lines), changed
+
+
+def _update_pep508_array(array, changes: dict[str, str], changed: list[str]) -> None:
+    for i, item in enumerate(array):
+        req = str(item)
+        dep = _parse_pep508(req)
+        if dep and dep.name in changes:
+            replaced = _replace_spec_version(req, changes[dep.name])
+            if replaced is not None:
+                array[i] = replaced
+                changed.append(dep.name)
+
+
+def _update_poetry_table(table, changes: dict[str, str], changed: list[str]) -> None:
+    if table is None:
+        return
+    for name in table:
+        if name == "python" or name not in changes:
+            continue
+        spec = table[name]
+        if isinstance(spec, str):
+            m = _TOML_OP_RE.match(spec)
+            op = (m.group(1) or "") if m else ""
+            table[name] = f"{op}{changes[name]}"
+            changed.append(name)
+        elif isinstance(spec, dict):
+            version = spec.get("version")
+            if isinstance(version, str):
+                m = _TOML_OP_RE.match(version)
+                op = (m.group(1) or "") if m else ""
+                spec["version"] = f"{op}{changes[name]}"
+                changed.append(name)
+
+
+def _update_pyproject(content: str, changes: dict[str, str]) -> tuple[str, list[str]]:
+    doc = tomlkit.parse(content)
+    changed: list[str] = []
+
+    project = doc.get("project")
+    if project is not None:
+        deps = project.get("dependencies")
+        if deps is not None:
+            _update_pep508_array(deps, changes, changed)
+        optional = project.get("optional-dependencies")
+        if optional is not None:
+            for group in optional.values():
+                _update_pep508_array(group, changes, changed)
+
+    tool = doc.get("tool")
+    poetry = tool.get("poetry") if tool is not None else None
+    if poetry is not None:
+        _update_poetry_table(poetry.get("dependencies"), changes, changed)
+        groups = poetry.get("group")
+        if groups is not None:
+            for group in groups.values():
+                _update_poetry_table(group.get("dependencies"), changes, changed)
+        _update_poetry_table(poetry.get("dev-dependencies"), changes, changed)
+
+    return tomlkit.dumps(doc), changed
+
+
 class PythonParser(BaseParser):
     @property
     def name(self) -> str:
@@ -210,17 +298,14 @@ class PythonParser(BaseParser):
         dependencies: list[Dependency] = []
 
         try:
+            content = file_path.read_text(encoding="utf-8-sig")
             if file_path.name == "requirements.txt":
-                content = file_path.read_text(encoding="utf-8-sig")
                 dependencies = _parse_requirements(content, str(file_path))
             elif file_path.name == "pyproject.toml":
-                content = file_path.read_text(encoding="utf-8-sig")
                 dependencies = _parse_pyproject_toml(content, str(file_path))
             elif file_path.name == "Pipfile":
-                content = file_path.read_text(encoding="utf-8-sig")
                 dependencies = _parse_pipfile(content, str(file_path))
             elif file_path.name == "setup.cfg":
-                content = file_path.read_text(encoding="utf-8-sig")
                 dependencies = _parse_setup_cfg(content, str(file_path))
         except Exception as exc:
             errors.append(f"Failed to parse {file_path.name}: {exc}")
@@ -232,5 +317,16 @@ class PythonParser(BaseParser):
             errors=errors,
         )
 
-    def write(self, file_path: Path, result: ParseResult) -> None:
-        raise NotImplementedError
+    def supports_update(self, file_path: Path) -> bool:
+        return file_path.name in ("requirements.txt", "pyproject.toml")
+
+    def update_versions(
+        self, file_path: Path, content: str, changes: dict[str, str]
+    ) -> tuple[str, list[str]]:
+        if file_path.name == "requirements.txt":
+            return _update_requirements(content, changes)
+        if file_path.name == "pyproject.toml":
+            return _update_pyproject(content, changes)
+        raise NotImplementedError(
+            f"Updating {file_path.name} is not supported yet"
+        )

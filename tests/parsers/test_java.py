@@ -39,6 +39,12 @@ class TestPomXml:
         junit = next(d for d in result.dependencies if "junit" in d.name)
         assert junit.is_dev is True
 
+    def test_malformed_pom_reports_error(self, tmp_path: Path) -> None:
+        result = _parse_file(tmp_path, "pom.xml", "<project><unclosed>")
+        assert result.dependencies == []
+        assert len(result.errors) == 1
+        assert "pom.xml" in result.errors[0]
+
     def test_property_resolution(self, tmp_path: Path) -> None:
         content = """\
 <?xml version="1.0" encoding="UTF-8"?>
