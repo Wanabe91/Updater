@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from openai import OpenAI
 
@@ -19,6 +21,23 @@ class AIResponse:
     usage: dict = field(default_factory=dict)
     success: bool = True
     error: str | None = None
+    elapsed: float = 0.0
+    prompt_chars: int = 0
+    prompt_lines: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return int(self.usage.get("total_tokens", 0))
+
+
+def _measure_prompt(messages: list[dict]) -> tuple[int, int]:
+    chars = 0
+    lines = 0
+    for message in messages:
+        content = message.get("content", "") or ""
+        chars += len(content)
+        lines += content.count("\n") + (1 if content else 0)
+    return chars, lines
 
 
 class AIClient:
@@ -39,16 +58,19 @@ class AIClient:
         )
 
     def chat(self, messages: list[dict], temperature: float = 0.2) -> AIResponse:
+        prompt_chars, prompt_lines = _measure_prompt(messages)
+        started = time.perf_counter()
         try:
             response = self._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=temperature,
             )
+            elapsed = time.perf_counter() - started
             choice = response.choices[0]
             content = choice.message.content or ""
 
-            usage = {}
+            usage: dict[str, Any] = {}
             if response.usage:
                 usage = {
                     "prompt_tokens": response.usage.prompt_tokens,
@@ -61,14 +83,21 @@ class AIClient:
                 model=response.model,
                 usage=usage,
                 success=True,
+                elapsed=elapsed,
+                prompt_chars=prompt_chars,
+                prompt_lines=prompt_lines,
             )
         except Exception as exc:
+            elapsed = time.perf_counter() - started
             logger.error("AI chat request failed: %s", exc)
             return AIResponse(
                 content="",
                 model=self.model,
                 success=False,
                 error=str(exc),
+                elapsed=elapsed,
+                prompt_chars=prompt_chars,
+                prompt_lines=prompt_lines,
             )
 
     def analyze_dependency(self, package: str, version: str, ecosystem: str) -> AIResponse:

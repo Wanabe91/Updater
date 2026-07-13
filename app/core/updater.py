@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from packaging.version import InvalidVersion, Version
 
@@ -11,6 +12,9 @@ from app.core.version_resolver import VersionResolver
 from app.db.repository import Repository
 from app.parsers import get_all_parsers
 from app.utils.backup import BackupManager
+
+if TYPE_CHECKING:
+    from rich.progress import Progress, TaskID
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +72,28 @@ class Updater:
     def _find_parser(self, file_path: Path):
         return next((p for p in self._parsers if p.can_parse(file_path)), None)
 
-    def check_updates(self) -> list[PlannedUpdate]:
+    def check_updates(
+        self,
+        progress: Progress | None = None,
+        task_id: TaskID | None = None,
+    ) -> list[PlannedUpdate]:
         scan = Scanner(self.project_path, max_depth=self._max_depth).scan()
         planned: list[PlannedUpdate] = []
         seen: set[tuple[str, str]] = set()
+
+        resolvable = [
+            dep for dep in scan.dependencies
+            if dep.version and dep.version != "*"
+            and self._resolver.supports(dep.ecosystem)
+        ]
+
+        if progress is not None and task_id is not None:
+            progress.update(
+                task_id,
+                total=len(resolvable),
+                completed=0,
+                description="[cyan]Resolving[/cyan] registry versions",
+            )
 
         for dep in scan.dependencies:
             if not dep.version or dep.version == "*":
@@ -87,10 +109,21 @@ class Updater:
                 continue
             seen.add(key)
 
+            if progress is not None and task_id is not None:
+                progress.update(
+                    task_id,
+                    description=f"[cyan]Checking[/cyan] {dep.name}",
+                )
             resolved = self._resolver.resolve(
                 dep.name, dep.version, dep.ecosystem, dep.version_specifier
             )
             if resolved is None:
+                if progress is not None and task_id is not None:
+                    progress.update(
+                        task_id,
+                        description=f"[yellow]not found[/yellow] {dep.name}",
+                        advance=1,
+                    )
                 continue
             # A pin ("==") always "satisfies" itself, so bump pins to the
             # latest release; range specifiers stay within their range.
@@ -109,6 +142,22 @@ class Updater:
                         is_dev=dep.is_dev,
                     )
                 )
+                if progress is not None and task_id is not None:
+                    progress.update(
+                        task_id,
+                        description=(
+                            f"[red]{dep.name}[/red] → {target} "
+                            f"[dim](from {dep.version})[/dim]"
+                        ),
+                        advance=1,
+                    )
+            else:
+                if progress is not None and task_id is not None:
+                    progress.update(
+                        task_id,
+                        description=f"[green]{dep.name}[/green] up to date",
+                        advance=1,
+                    )
         return planned
 
     def _plan_changes(

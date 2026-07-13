@@ -3,11 +3,15 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.ai.client import AIClient
 from app.ai.code_fixer import CodeFixer, CodePatch
 from app.db.repository import Repository
 from app.utils.backup import BackupManager
+
+if TYPE_CHECKING:
+    from rich.progress import Progress, TaskID
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +49,8 @@ class Migrator:
         new_package: str,
         old_version: str = "",
         new_version: str = "",
+        progress: Progress | None = None,
+        task_id: TaskID | None = None,
     ) -> list[CodePatch]:
         return self._fixer.generate_patches(
             self.project_path,
@@ -52,6 +58,8 @@ class Migrator:
             new_package,
             old_version=old_version,
             new_version=new_version,
+            progress=progress,
+            task_id=task_id,
         )
 
     def apply_migration(

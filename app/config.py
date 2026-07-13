@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_GLOBAL_ENV = Path.home() / ".updater" / ".env"
 
 
 class Settings(BaseSettings):
@@ -13,7 +15,13 @@ class Settings(BaseSettings):
     backup_dir: Path | None = None
     max_depth: int = 10
 
-    model_config = {"env_prefix": "UPDATER_", "env_file": ".env"}
+    # CWD `.env` (last) overrides the global `~/.updater/.env` (first);
+    # actual process env vars always take priority over both.
+    model_config = SettingsConfigDict(
+        env_prefix="UPDATER_",
+        env_file=(str(_GLOBAL_ENV), ".env"),
+        extra="ignore",
+    )
 
 
 settings = Settings()

@@ -5,6 +5,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
+from app.cli.progress import add_task, make_ai_progress
 from app.cli.render import print_unified_diff
 from app.config import settings
 from app.core.migrator import Migrator
@@ -31,8 +32,17 @@ def run(
     migrator = Migrator(path, repository=Repository(settings.db_path))
 
     try:
-        with console.status(f"Generating migration {package} -> {to}..."):
-            patches = migrator.generate_migration(package, to)
+        with make_ai_progress() as progress:
+            task = add_task(
+                progress,
+                f"[cyan]Scanning[/cyan] files for '[bold]{package}[/bold]'",
+            )
+            patches = migrator.generate_migration(
+                package, to, progress=progress, task_id=task
+            )
+            stats = progress.tasks[task]
+            scanned_files = int(stats.total or 0)
+            elapsed = stats.finished_time or 0.0
     except Exception as exc:
         console.print(
             f"[red]Migration generation failed:[/red] {exc}\n"
@@ -44,10 +54,15 @@ def run(
         console.print(
             f"[yellow]No files using '{package}' needed changes.[/yellow]"
         )
+        if scanned_files:
+            console.print(
+                f"[dim]Scanned {scanned_files} file(s) · "
+                f"{elapsed:.1f}s · 0 patches[/dim]"
+            )
         return
 
     console.print(
-        f"[bold]{len(patches)}[/bold] patches for migration "
+        f"\n[bold]{len(patches)}[/bold] patches for migration "
         f"[cyan]{package}[/cyan] -> [green]{to}[/green]:\n"
     )
     for patch in patches:
@@ -56,6 +71,11 @@ def run(
             console.print(f"[bold]{label}[/bold] — {patch.description}")
         diff = create_unified_diff(patch.old_code, patch.new_code, label)
         print_unified_diff(console, diff)
+
+    console.print(
+        f"[dim]Scanned {scanned_files} file(s) · "
+        f"{len(patches)} patches · {elapsed:.1f}s[/dim]"
+    )
 
     if dry_run:
         console.print("[bold]Dry run — no files were modified.[/bold]")

@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.ai.client import AIClient, extract_json
 from app.ai.prompts import GENERATE_MIGRATION_PROMPT
+
+if TYPE_CHECKING:
+    from rich.progress import Progress, TaskID
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +58,20 @@ class CodeFixer:
         old_package: str,
         new_package: str,
         source: str | None = None,
+        progress: Progress | None = None,
+        task_id: TaskID | None = None,
+        rel_label: str = "",
     ) -> CodePatch | None:
         if source is None:
             source = file_path.read_text(encoding="utf-8")
+        label = rel_label or str(file_path)
+        if progress is not None and task_id is not None:
+            progress.update(
+                task_id,
+                description=f"[cyan]{label}[/cyan] — imports",
+                tokens="",
+                elapsed="",
+            )
         messages = [
             {
                 "role": "system",
@@ -78,8 +93,19 @@ class CodeFixer:
             },
         ]
         response = self.ai_client.chat(messages, temperature=0.0)
+        tokens = response.total_tokens
+        elapsed_str = f"{response.elapsed:.1f}s"
         if not response.success:
             logger.error("fix_imports failed for %s: %s", file_path, response.error)
+            if progress is not None and task_id is not None:
+                progress.update(
+                    task_id,
+                    description=(
+                        f"[red]failed[/red] {label} — imports · {elapsed_str}"
+                    ),
+                    tokens=f"{tokens} tok" if tokens else "",
+                    elapsed=elapsed_str,
+                )
             return None
 
         new_source = _strip_code_fences(response.content)
@@ -87,8 +113,28 @@ class CodeFixer:
             new_source += "\n"
         if new_source.strip() == source.strip():
             logger.info("No import changes needed in %s", file_path)
+            if progress is not None and task_id is not None:
+                progress.update(
+                    task_id,
+                    description=(
+                        f"[dim]{label}[/dim] — imports ok"
+                        f"{f' · {tokens} tok' if tokens else ''} · {elapsed_str}"
+                    ),
+                    tokens=f"{tokens} tok" if tokens else "",
+                    elapsed=elapsed_str,
+                )
             return None
 
+        if progress is not None and task_id is not None:
+            progress.update(
+                task_id,
+                description=(
+                    f"[green]{label}[/green] — imports"
+                    f"{f' · {tokens} tok' if tokens else ''} · {elapsed_str}"
+                ),
+                tokens=f"{tokens} tok" if tokens else "",
+                elapsed=elapsed_str,
+            )
         return CodePatch(
             file_path=file_path,
             old_code=source,
@@ -104,6 +150,9 @@ class CodeFixer:
         new_package: str,
         new_version: str,
         source: str | None = None,
+        progress: Progress | None = None,
+        task_id: TaskID | None = None,
+        rel_label: str = "",
     ) -> list[CodePatch]:
         if source is None:
             source = file_path.read_text(encoding="utf-8")
@@ -111,6 +160,14 @@ class CodeFixer:
         if old_package not in source and new_package not in source:
             return []
 
+        label = rel_label or str(file_path)
+        if progress is not None and task_id is not None:
+            progress.update(
+                task_id,
+                description=f"[cyan]{label}[/cyan] — API",
+                tokens="",
+                elapsed="",
+            )
         prompt = GENERATE_MIGRATION_PROMPT.format(
             old_package=old_package,
             old_version=old_version,
@@ -129,8 +186,19 @@ class CodeFixer:
             {"role": "user", "content": prompt},
         ]
         response = self.ai_client.chat(messages, temperature=0.2)
+        tokens = response.total_tokens
+        elapsed_str = f"{response.elapsed:.1f}s"
         if not response.success:
             logger.error("fix_api_usage failed for %s: %s", file_path, response.error)
+            if progress is not None and task_id is not None:
+                progress.update(
+                    task_id,
+                    description=(
+                        f"[red]failed[/red] {label} — API · {elapsed_str}"
+                    ),
+                    tokens=f"{tokens} tok" if tokens else "",
+                    elapsed=elapsed_str,
+                )
             return []
 
         try:
@@ -140,16 +208,45 @@ class CodeFixer:
                 "Failed to parse JSON from fix_api_usage for %s",
                 file_path,
             )
+            if progress is not None and task_id is not None:
+                progress.update(
+                    task_id,
+                    description=(
+                        f"[yellow]bad JSON[/yellow] {label} — API · {elapsed_str}"
+                    ),
+                    tokens=f"{tokens} tok" if tokens else "",
+                    elapsed=elapsed_str,
+                )
             return []
 
         migrated_code = result.get("migrated_code", "")
         if not migrated_code or migrated_code.strip() == source.strip():
+            if progress is not None and task_id is not None:
+                progress.update(
+                    task_id,
+                    description=(
+                        f"[dim]{label}[/dim] — API unchanged"
+                        f"{f' · {tokens} tok' if tokens else ''} · {elapsed_str}"
+                    ),
+                    tokens=f"{tokens} tok" if tokens else "",
+                    elapsed=elapsed_str,
+                )
             return []
 
         breaking = result.get("breaking_changes", "")
         if isinstance(breaking, list):
             breaking = "; ".join(str(item) for item in breaking)
 
+        if progress is not None and task_id is not None:
+            progress.update(
+                task_id,
+                description=(
+                    f"[green]{label}[/green] — API"
+                    f"{f' · {tokens} tok' if tokens else ''} · {elapsed_str}"
+                ),
+                tokens=f"{tokens} tok" if tokens else "",
+                elapsed=elapsed_str,
+            )
         return [
             CodePatch(
                 file_path=file_path,
@@ -166,6 +263,8 @@ class CodeFixer:
         new_package: str,
         old_version: str = "",
         new_version: str = "",
+        progress: Progress | None = None,
+        task_id: TaskID | None = None,
     ) -> list[CodePatch]:
         patches: list[CodePatch] = []
         supported_ext = {
@@ -173,6 +272,18 @@ class CodeFixer:
             ".go", ".rs", ".java",
         }
 
+        if progress is not None and task_id is not None:
+            progress.update(
+                task_id,
+                description=(
+                    f"[cyan]Scanning[/cyan] files for "
+                    f"'[bold]{old_package}[/bold]'"
+                ),
+                tokens="",
+                elapsed="",
+            )
+
+        matching: list[tuple[Path, str]] = []
         for file_path in project_path.rglob("*"):
             if file_path.suffix not in supported_ext:
                 continue
@@ -190,8 +301,30 @@ class CodeFixer:
             if old_package not in source:
                 continue
 
+            matching.append((file_path, source))
+
+        if progress is not None and task_id is not None:
+            progress.update(
+                task_id,
+                total=len(matching),
+                completed=0,
+                description=(
+                    f"Migrating [bold]{len(matching)}[/bold] file"
+                    f"{'s' if len(matching) != 1 else ''}"
+                ),
+            )
+
+        for file_path, source in matching:
+            rel_label = _relative_to(file_path, project_path)
+
             import_patch = self.fix_imports(
-                file_path, old_package, new_package, source=source
+                file_path,
+                old_package,
+                new_package,
+                source=source,
+                progress=progress,
+                task_id=task_id,
+                rel_label=rel_label,
             )
             current_source = source
             if import_patch is not None:
@@ -205,7 +338,17 @@ class CodeFixer:
                 new_package,
                 new_version,
                 source=current_source,
+                progress=progress,
+                task_id=task_id,
+                rel_label=rel_label,
             )
             patches.extend(api_patches)
 
         return patches
+
+
+def _relative_to(file_path: Path, base: Path) -> str:
+    try:
+        return str(file_path.relative_to(base))
+    except ValueError:
+        return str(file_path)

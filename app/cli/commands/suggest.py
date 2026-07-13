@@ -4,10 +4,12 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.progress import Progress, TaskID
 from rich.table import Table
 
+from app.cli.progress import add_task, make_ai_progress
 from app.config import settings
-from app.core.analyzer import Analyzer
+from app.core.analyzer import Analyzer, Suggestion
 from app.core.scanner import Scanner
 from app.db.repository import Repository
 
@@ -21,7 +23,7 @@ def run(
     package: str = typer.Option(None, "--package", "-P", help="Analyze a specific package."),
     max_packages: int = typer.Option(10, "--max", help="Max packages to analyze."),
     min_confidence: float = typer.Option(
-        0.5, "--min-confidence", help="Minimum confidence to show a suggestion."
+        0.8, "--min-confidence", help="Minimum confidence to show a suggestion."
     ),
 ) -> None:
     """Ask the AI for better alternatives to project dependencies."""
@@ -54,16 +56,31 @@ def run(
             )
             raise typer.Exit(1)
         dep = matches[0]
-        with console.status(f"Analyzing {package}..."):
+        with make_ai_progress() as progress:
+            task = add_task(progress, f"[cyan]Analyzing[/cyan] {package}", total=1)
             suggestions = analyzer.analyze_package(
-                dep.name, dep.version, dep.ecosystem or "python"
+                dep.name, dep.version, dep.ecosystem or "python",
+                progress=progress, task_id=task,
             )
+            summary = _summarize(suggestions, [task], progress)
     else:
-        with console.status("Analyzing project dependencies..."):
-            suggestions = analyzer.analyze_project(result.dependencies)
+        unique = list({d.name for d in result.dependencies if not d.is_dev})
+        total_to_analyze = min(max_packages, len(unique))
+        with make_ai_progress() as progress:
+            task = add_task(
+                progress,
+                "[cyan]Analyzing[/cyan] project dependencies",
+                total=total_to_analyze,
+            )
+            suggestions = analyzer.analyze_project(
+                result.dependencies, progress=progress, task_id=task
+            )
+            summary = _summarize(suggestions, [task], progress)
 
+    console.print()
     if not suggestions:
         console.print("[green]No better alternatives suggested.[/green]")
+        console.print(summary)
         return
 
     table = Table(title=f"Suggestions for {path.name}")
@@ -84,11 +101,26 @@ def run(
             s.reason,
         )
     console.print(table)
+    console.print(summary)
 
     _save_suggestions(path, suggestions)
 
 
-def _save_suggestions(path: Path, suggestions: list) -> None:
+def _summarize(
+    suggestions: list[Suggestion],
+    task_ids: list[TaskID],
+    progress: Progress,
+) -> str:
+    tasks = [progress.tasks[ti] for ti in task_ids]
+    total_calls = sum(t.completed for t in tasks)
+    return (
+        f"[dim]Analyzed {int(total_calls)} packages · "
+        f"{len(suggestions)} alternatives found · "
+        f"avg {sum(t.finished_time or 0 for t in tasks) / max(len(tasks), 1):.1f}s[/dim]"
+    )
+
+
+def _save_suggestions(path: Path, suggestions: list[Suggestion]) -> None:
     try:
         repo = Repository(settings.db_path)
         project = repo.get_or_create_project(path)

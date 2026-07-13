@@ -46,7 +46,7 @@ class TestAnalyzePackage:
                 )
             }
         )
-        analyzer = Analyzer(ai_client=client)
+        analyzer = Analyzer(ai_client=client, min_confidence=0.5)
         suggestions = analyzer.analyze_package("requests", "2.31.0")
         assert [s.suggested_package for s in suggestions] == ["httpx", "aiohttp"]
         assert suggestions[0].package == "requests"
@@ -121,3 +121,84 @@ class TestAnalyzeProject:
         ]
         analyzer.analyze_project(deps)
         assert client.calls == ["a"]
+
+
+class FakeTask:
+    def __init__(self) -> None:
+        self.description = ""
+        self.completed = 0.0
+        self.total: float | None = None
+
+
+class FakeProgress:
+    def __init__(self) -> None:
+        self.tasks: dict[int, FakeTask] = {}
+        self.updates: list[tuple] = []
+
+    def update(self, task_id: int, **fields) -> None:
+        self.updates.append((task_id, fields))
+        task = self.tasks.setdefault(task_id, FakeTask())
+        if "description" in fields:
+            task.description = fields["description"]
+        if "total" in fields:
+            task.total = fields["total"]
+        if "advance" in fields:
+            task.completed += fields["advance"]
+
+
+class TestAnalyzePackageProgress:
+    def test_progress_advances_once_per_call(self) -> None:
+        client = StubAIClient(
+            {"requests": _alternatives_json({"name": "httpx", "confidence": 0.9})}
+        )
+        analyzer = Analyzer(ai_client=client, min_confidence=0.5)
+        progress = FakeProgress()
+        task_id = 1
+        progress.tasks[task_id] = FakeTask()
+
+        analyzer.analyze_package(
+            "requests", "2.31.0", progress=progress, task_id=task_id
+        )
+
+        advances = [u[1].get("advance", 0) for u in progress.updates]
+        assert sum(advances) == 1
+        assert progress.tasks[task_id].completed == 1
+
+    def test_progress_marks_failed_request(self) -> None:
+        analyzer = Analyzer(ai_client=StubAIClient({}), min_confidence=0.5)
+        progress = FakeProgress()
+        task_id = 1
+        progress.tasks[task_id] = FakeTask()
+
+        analyzer.analyze_package(
+            "requests", "2.31.0", progress=progress, task_id=task_id
+        )
+
+        descriptions = [u[1].get("description", "") for u in progress.updates]
+        assert any("failed" in d for d in descriptions)
+
+
+class TestAnalyzeProjectProgress:
+    def test_progress_advances_for_each_unique_non_dev_package(self) -> None:
+        client = StubAIClient(
+            {
+                "requests": _alternatives_json({"name": "httpx", "confidence": 0.9}),
+                "flask": _alternatives_json({"name": "fastapi", "confidence": 0.9}),
+            }
+        )
+        analyzer = Analyzer(ai_client=client, min_confidence=0.5, max_packages=10)
+        deps = [
+            Dependency(name="requests", version="2.31.0", ecosystem="python"),
+            Dependency(name="requests", version="2.31.0", ecosystem="python"),
+            Dependency(name="flask", version="3.0.0", ecosystem="python"),
+            Dependency(name="pytest", version="8.0.0", is_dev=True, ecosystem="python"),
+        ]
+        progress = FakeProgress()
+        task_id = 1
+        progress.tasks[task_id] = FakeTask()
+
+        analyzer.analyze_project(deps, progress=progress, task_id=task_id)
+
+        advances = [u[1].get("advance", 0) for u in progress.updates]
+        assert sum(advances) == 2
+        assert client.calls == ["requests", "flask"]

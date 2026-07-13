@@ -3,12 +3,16 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import httpx
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from app.parsers.base import Dependency
+
+if TYPE_CHECKING:
+    from rich.progress import Progress, TaskID
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +300,12 @@ class VersionResolver:
             is_prerelease=latest[0].is_prerelease,
         )
 
-    def resolve_batch(self, dependencies: list[Dependency]) -> list[ResolvedVersion]:
+    def resolve_batch(
+        self,
+        dependencies: list[Dependency],
+        progress: Progress | None = None,
+        task_id: TaskID | None = None,
+    ) -> list[ResolvedVersion]:
         resolved: list[ResolvedVersion] = []
         seen: set[tuple[str, str]] = set()
         for dep in dependencies:
@@ -304,12 +313,29 @@ class VersionResolver:
             if key in seen:
                 continue
             seen.add(key)
+            ecosystem = dep.ecosystem or "python"
+            if progress is not None and task_id is not None:
+                progress.update(
+                    task_id,
+                    description=f"[cyan]Checking[/cyan] {dep.name} ({ecosystem})",
+                )
             result = self.resolve(
                 package=dep.name,
                 current_version=dep.version,
-                ecosystem=dep.ecosystem or "python",
+                ecosystem=ecosystem,
                 specifier=dep.version_specifier,
             )
+            if progress is not None and task_id is not None:
+                if result is None:
+                    desc = f"[yellow]not found[/yellow] {dep.name}"
+                elif result.is_outdated:
+                    desc = (
+                        f"[red]{dep.name}[/red] → {result.latest} "
+                        f"[dim](current {result.current})[/dim]"
+                    )
+                else:
+                    desc = f"[green]{dep.name}[/green] up to date"
+                progress.update(task_id, description=desc, advance=1)
             if result is not None:
                 resolved.append(result)
         return resolved

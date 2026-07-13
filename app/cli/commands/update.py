@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from app.cli.progress import add_task, make_registry_progress
 from app.cli.render import print_unified_diff
 from app.config import settings
 from app.core.scanner import Scanner
@@ -45,8 +46,17 @@ def check(
         )
         return
 
-    with console.status("Checking registries..."):
-        resolved = resolver.resolve_batch(supported)
+    with make_registry_progress() as progress:
+        task = add_task(
+            progress,
+            "[cyan]Resolving[/cyan] registry versions",
+            total=len(supported),
+        )
+        resolved = resolver.resolve_batch(
+            supported, progress=progress, task_id=task
+        )
+        stats = progress.tasks[task]
+        elapsed = stats.finished_time or 0.0
 
     table = Table(title=f"Updates for {path.name}")
     table.add_column("Name", style="cyan", no_wrap=True)
@@ -89,6 +99,10 @@ def check(
             f"[dim]{unresolved} dependencies could not be resolved "
             f"(not found in the registry).[/dim]"
         )
+    console.print(
+        f"[dim]Resolved {len(supported)} packages · "
+        f"{outdated_count} outdated · {elapsed:.1f}s[/dim]"
+    )
 
     _save_snapshot(path, result.dependencies, resolved)
 
@@ -138,11 +152,21 @@ def apply(
         repository=Repository(settings.db_path),
         max_depth=settings.max_depth,
     )
-    with console.status("Checking registries..."):
-        planned = updater.check_updates()
+    with make_registry_progress() as progress:
+        task = add_task(
+            progress,
+            "[cyan]Resolving[/cyan] registry versions",
+        )
+        planned = updater.check_updates(progress=progress, task_id=task)
+        stats = progress.tasks[task]
+        elapsed = stats.finished_time or 0.0
 
     if not planned:
         console.print("[green]All dependencies are already up to date.[/green]")
+        console.print(
+            f"[dim]Resolved {int(stats.total or 0)} packages · "
+            f"0 outdated · {elapsed:.1f}s[/dim]"
+        )
         return
 
     table = Table(title="Planned updates")
@@ -158,6 +182,10 @@ def apply(
             _relative(update.source, path),
         )
     console.print(table)
+    console.print(
+        f"[dim]Resolved {int(stats.total or 0)} packages · "
+        f"{len(planned)} outdated · {elapsed:.1f}s[/dim]"
+    )
 
     result = updater.apply_updates(planned, dry_run=dry_run)
 
